@@ -13,19 +13,19 @@ def main():
     results_path = os.path.join(RESULTS_DIR, "optimization_results.json")
 
     if not os.path.exists(results_path):
-        print("Hata: Önce optimize.py çalıştırın!")
+        print("Hata: Once optimize.py calistirin!")
         return
 
-    with open(results_path, "r") as f:
+    with open(results_path, "r", encoding="utf-8") as f:
         all_results = json.load(f)
 
     print("=" * 70)
-    print("  SWINGINESS TICK REPLAY OPTİMİZASYON RAPORU")
+    print("  SWINGINESS TICK REPLAY OPTIMIZASYON RAPORU")
     print("=" * 70)
 
     for symbol, results in all_results.items():
         if not results:
-            print(f"\n  {symbol}: Sonuç yok")
+            print(f"\n  {symbol}: Sonuc yok")
             continue
 
         robust = [r for r in results
@@ -53,7 +53,7 @@ def main():
             print(f"  │ Total Trades    │ {is_r['total_trades']:>11,} │ {os_r['total_trades']:>11,} │")
             print(f"  └─────────────────┴──────────────┴──────────────┘")
 
-            print(f"\n  DFS Ağırlıkları:")
+            print(f"\n  DFS Agirliklari:")
             print(f"    Delta={p.get('w_delta',0):.2f}  CVD={p.get('w_cvd',0):.2f}  LogP={p.get('w_logp',0):.2f}  OBI_W={p.get('w_obi_w',0):.2f}")
             print(f"    OBI_D={p.get('w_obi_d',0):.2f}  Sweep={p.get('w_sweep',0):.2f}  Burst={p.get('w_burst',0):.2f}  OI={p.get('w_oi',0):.2f}")
 

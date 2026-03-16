@@ -16,7 +16,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 def run_backtest(symbol, params=None):
     parquet_path = os.path.join(DATA_DIR, f"{symbol.lower()}_aggtrades.parquet")
     if not os.path.exists(parquet_path):
-        print(f"Hata: {parquet_path} bulunamadı. Önce download_aggtrades.py çalıştırın.")
+        print(f"Hata: {parquet_path} bulunamadi. Once download_aggtrades.py calistirin.")
         return None
 
     print(f"\n{'='*60}")
@@ -63,13 +63,13 @@ def run_backtest(symbol, params=None):
         strategy.on_second(ts_sec, price, engine)
 
         if strategy.equity <= 0:
-            print(f"  TASFIYE — equity sıfırlandı")
+            print(f"  TASFIYE -- equity sifirlandi")
             break
 
         # Progress
         if processed % 86400 == 0:  # her ~gün
             days = processed / 86400
-            print(f"  Gün {days:.0f} | Equity: {strategy.equity:.2f} | İşlem: {len(strategy.trades)}")
+            print(f"  Gun {days:.0f} | Equity: {strategy.equity:.2f} | Islem: {len(strategy.trades)}")
 
     # Açık pozisyonu kapat
     if strategy.position != 0:

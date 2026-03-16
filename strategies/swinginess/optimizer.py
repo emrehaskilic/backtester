@@ -11,11 +11,12 @@ import numpy as np
 import json
 import os
 import sys
-from tick_engine import TickReplayEngine
-from swinginess_strategy import SwingingessStrategy
+from strategies.swinginess.tick_engine import TickReplayEngine
+from strategies.swinginess.strategy import SwingingessStrategy
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+# Paths relative to project root
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "results")
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 N_TRIALS = 500
 
