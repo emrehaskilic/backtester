@@ -36,6 +36,7 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT"]
+STRATEGIES = ["pmax_kc", "walkforward_pmax", "swinginess"]
 
 # ============================================================
 # WebSocket Manager
@@ -162,6 +163,22 @@ class SettingsRequest(BaseModel):
     n_jobs: Optional[int] = None
 
 
+# V2 Pipeline Models
+class V2InitRequest(BaseModel):
+    symbol: str = "ETHUSDT"
+    timeframe: str = "3m"
+    n_trials: int = 1000
+
+
+class V2StepStartRequest(BaseModel):
+    step: str  # "pmax_discovery" | "kc_optimize" | "kelly_dyncomp" | "dynsl_test"
+
+
+class V2SelectRequest(BaseModel):
+    step: str
+    selected_index: int  # 0-9
+
+
 # ============================================================
 # HEALTH & META
 # ============================================================
@@ -227,6 +244,117 @@ def pipeline_remove(job_id: str):
 def pipeline_history():
     from pipeline.state_manager import get_completed_jobs
     return {"results": get_completed_jobs()}
+
+
+@app.get("/api/pipeline/walkforward-state")
+def walkforward_state():
+    """Walk-Forward optimizer'in canli durumunu dondur (frontend reconnect icin)."""
+    from pipeline.orchestrator import _wf_optimizer_ref
+    opt = _wf_optimizer_ref[0]
+    if opt is not None and hasattr(opt, "live_state"):
+        return opt.live_state
+    # Pipeline durmusa, kayitli sonuclari dondur (KC oncelikli)
+    wf_kc_path = os.path.join(RESULTS_DIR, "ETHUSDT_walkforward_kc.json")
+    wf_path = wf_kc_path if os.path.exists(wf_kc_path) else os.path.join(RESULTS_DIR, "ETHUSDT_walkforward.json")
+    if os.path.exists(wf_path):
+        try:
+            with open(wf_path) as f:
+                data = json.load(f)
+            return {
+                "is_walkforward": True,
+                "running": False,
+                "symbol": data.get("symbol", "ETHUSDT"),
+                "current_fold": len(data.get("folds", [])),
+                "total_folds": len(data.get("folds", [])),
+                "completed_trials": 0,
+                "total_trials": 0,
+                "best_oos_net": 0,
+                "best_dd": 0,
+                "best_ratio": 0,
+                "fold_results": data.get("folds", []),
+                "aggregate": data.get("aggregate"),
+            }
+        except Exception:
+            pass
+    return {"is_walkforward": False, "running": False}
+
+
+# ============================================================
+# PIPELINE V2 — Interactive Step-Based
+# ============================================================
+
+@app.post("/api/v2/init")
+def v2_init(req: V2InitRequest):
+    """V2 pipeline başlat — state sıfırla."""
+    from pipeline.state_manager import init_v2_pipeline
+    state = init_v2_pipeline(req.symbol, req.timeframe, req.n_trials)
+    return {"status": "initialized", "state": state}
+
+
+@app.get("/api/v2/state")
+def v2_state():
+    """V2 pipeline'ın güncel durumunu döndür."""
+    from pipeline.state_manager import load_v2_state, PIPELINE_V2_STEPS
+    from pipeline.orchestrator import is_v2_running
+    state = load_v2_state()
+    state["is_step_running"] = is_v2_running()
+    state["steps"] = PIPELINE_V2_STEPS
+    return state
+
+
+@app.post("/api/v2/step/start")
+def v2_step_start(req: V2StepStartRequest):
+    """V2 pipeline adımını başlat."""
+    from pipeline.orchestrator import start_v2_step, is_v2_running, set_event_callback
+    if is_v2_running():
+        return {"error": "Bir adım zaten çalışıyor"}
+
+    set_event_callback(ws_manager.sync_broadcast)
+    result = start_v2_step(req.step)
+    return result
+
+
+@app.post("/api/v2/step/select")
+def v2_step_select(req: V2SelectRequest):
+    """Kullanıcı top-10'dan birini seçti."""
+    from pipeline.state_manager import select_v2_result
+    result = select_v2_result(req.step, req.selected_index)
+    if "error" in result:
+        return result
+    ws_manager.sync_broadcast("v2_selection_made", {
+        "step": req.step,
+        "selected_index": req.selected_index,
+        "locked_params": result.get("locked_params", {}),
+        "next_step": result.get("current_step"),
+    })
+    return {"status": "selected", "state": result}
+
+
+class V2UpdateSettingsRequest(BaseModel):
+    timeframe: Optional[str] = None
+    n_trials: Optional[int] = None
+
+
+@app.post("/api/v2/settings")
+def v2_update_settings(req: V2UpdateSettingsRequest):
+    """V2 pipeline ayarlarını güncelle (sıfırlamadan)."""
+    from pipeline.state_manager import update_v2_settings
+    state = update_v2_settings(req.timeframe, req.n_trials)
+    return {"status": "updated", "state": state}
+
+
+@app.post("/api/v2/stop")
+def v2_stop():
+    """V2 çalışan adımı durdur."""
+    from pipeline.orchestrator import stop_v2_step
+    return stop_v2_step()
+
+
+@app.post("/api/v2/reset")
+def v2_reset():
+    """V2 pipeline'ı sıfırla."""
+    from pipeline.state_manager import reset_v2_pipeline
+    return reset_v2_pipeline()
 
 
 # ============================================================

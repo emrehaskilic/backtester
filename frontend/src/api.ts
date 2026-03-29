@@ -177,6 +177,28 @@ export const removeFromPipeline = (jobId: string) =>
 
 export const getPipelineHistory = () => api.get("/api/pipeline/history");
 
+export const getWalkForwardState = () => api.get("/api/pipeline/walkforward-state");
+
+// --- Pipeline V2 API ---
+
+export const v2Init = (symbol: string, timeframe: string = "3m", n_trials: number = 1000) =>
+  api.post("/api/v2/init", { symbol, timeframe, n_trials });
+
+export const v2GetState = () => api.get("/api/v2/state");
+
+export const v2StepStart = (step: string) =>
+  api.post("/api/v2/step/start", { step });
+
+export const v2StepSelect = (step: string, selected_index: number) =>
+  api.post("/api/v2/step/select", { step, selected_index });
+
+export const v2UpdateSettings = (settings: { timeframe?: string; n_trials?: number }) =>
+  api.post("/api/v2/settings", settings);
+
+export const v2Stop = () => api.post("/api/v2/stop");
+
+export const v2Reset = () => api.post("/api/v2/reset");
+
 // --- Settings API ---
 
 export const getSettings = () => api.get("/api/settings");

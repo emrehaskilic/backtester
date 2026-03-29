@@ -221,7 +221,7 @@ class PMaxKCOptimizer(StrategyOptimizer):
             if not self.running:
                 study.stop()
                 return
-            if trial.value and trial.value > -999:
+            if trial.value is not None and trial.value > -999 and "oos_net" in trial.user_attrs:
                 a = trial.user_attrs
                 td = {
                     "tid": trial.number,

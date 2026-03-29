@@ -24,7 +24,7 @@ def ensure_data(symbol: str, strategy: str, timeframe: str = "3m",
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
 
-    if strategy == "pmax_kc":
+    if strategy in ("pmax_kc", "walkforward_pmax", "walkforward_kc", "unified_pmax", "unified_kc", "unified_kelly"):
         return _ensure_klines(symbol, timeframe, days, data_dir, progress_callback)
     elif strategy == "swinginess":
         return _ensure_aggtrades(symbol, data_dir, progress_callback)

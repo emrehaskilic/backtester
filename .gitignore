@@ -10,3 +10,13 @@ frontend/node_modules/
 _bmad/
 .claude/
 {output_folder}/
+
+# Rust build artifacts
+rust_engine/target/
+*.pyd
+*.dll
+*.so
+*.dylib
+
+# Optimizer logs
+bias_optimizer_progress.log

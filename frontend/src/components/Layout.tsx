@@ -22,7 +22,7 @@ const NAV_ITEMS = [
 
 const PAGE_TITLES: Record<string, string> = {
   "/": "Panel",
-  "/pipeline": "Pipeline — Tam Otomatik Optimizasyon",
+  "/pipeline": "Pipeline V2 — İnteraktif Optimizasyon",
   "/backtest": "Backtest",
   "/results": "Optimizasyon Sonuçları",
   "/data": "Veri Yönetimi",

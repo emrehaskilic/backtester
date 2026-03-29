@@ -1,353 +1,872 @@
-import { useState, useEffect, useRef } from 'react'
-import { Play, Square, Plus, Trash2, Loader2, CheckCircle2, XCircle, Clock, Zap } from 'lucide-react'
+import { useState, useEffect, useRef, Fragment } from 'react'
+import {
+  Play, Square, CheckCircle2, ChevronRight, ChevronDown,
+  Lock, Zap, TrendingUp, BarChart3, RotateCcw, ArrowRight,
+} from 'lucide-react'
 import { usePipelineStore } from '../stores/pipelineStore'
-import { useSettingsStore } from '../stores/settingsStore'
-import { startPipeline, stopPipeline, getPipelineStatus } from '../api'
+import type { V2Top10Entry } from '../stores/pipelineStore'
+import { v2Init, v2GetState, v2StepStart, v2StepSelect, v2Stop, v2Reset, v2UpdateSettings } from '../api'
 import ProgressBar from '../components/ProgressBar'
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT']
-const STRATEGIES = [
-  { value: 'pmax_kc', label: 'PMax + Keltner Channel' },
-  { value: 'swinginess', label: 'Swinginess (Tick Replay)' },
-]
 const TIMEFRAMES = ['1m', '3m', '5m', '15m']
-const ROUND_NAMES = ['', 'PMAX KEŞİF', 'FINE-TUNE', 'DD OPTİMİZE', 'KC OPTİMİZE', 'KC FINE-TUNE']
+const TRIAL_OPTIONS = [500, 1000, 2000, 3000]
+
+const STEP_LABELS = ['PMax Keşif', 'KC Optimize', 'Kelly DynComp', 'DynSL Test']
+const STEP_KEYS = ['pmax_discovery', 'kc_optimize', 'kelly_dyncomp', 'dynsl_test']
+const STEP_DESCRIPTIONS = [
+  'Adaptive PMax parametrelerini 12+ hafta üzerinde optimize eder',
+  'Keltner Channel parametrelerini PMax kilitli olarak optimize eder',
+  'Kelly/DynComp dinamik pozisyon büyüklüğünü optimize eder',
+  'Hard Stop yüzdesini grid search ile test eder',
+]
+
+// Parametre açıklamaları
+const PARAM_LABELS: Record<string, string> = {
+  vol_lookback: 'Vol Lookback',
+  flip_window: 'Flip Window',
+  mult_base: 'Mult Base',
+  mult_scale: 'Mult Scale',
+  ma_base: 'MA Base',
+  ma_scale: 'MA Scale',
+  atr_base: 'ATR Base',
+  atr_scale: 'ATR Scale',
+  update_interval: 'Update Int.',
+  kc_length: 'KC Length',
+  kc_multiplier: 'KC Multiplier',
+  kc_atr_period: 'KC ATR Period',
+  max_dca_steps: 'Max DCA',
+  tp_close_percent: 'TP Close %',
+  base_margin_pct: 'Base Margin %',
+  tier1_threshold: 'Tier1 Eşik',
+  tier1_pct: 'Tier1 %',
+  tier2_threshold: 'Tier2 Eşik',
+  tier2_pct: 'Tier2 %',
+  hard_stop: 'Hard Stop %',
+}
 
 export default function Pipeline() {
   const store = usePipelineStore()
-  const { settings, fetch: fetchSettings } = useSettingsStore()
-
-  // Form state
-  const [selectedSymbols, setSelectedSymbols] = useState<string[]>(['BTCUSDT'])
-  const [strategy, setStrategy] = useState('pmax_kc')
-  const [selectedTFs, setSelectedTFs] = useState<string[]>(['3m'])
+  const { v2 } = store
   const logEndRef = useRef<HTMLDivElement>(null)
+
+  // Init form state
+  const [symbol, setSymbol] = useState('ETHUSDT')
+  const [timeframe, setTimeframe] = useState('3m')
+  const [nTrials, setNTrials] = useState(1000)
+  const [selectedRow, setSelectedRow] = useState<number | null>(null)
+  const [expandedRow, setExpandedRow] = useState<number | null>(null)
 
   useEffect(() => {
     store.connect()
-    fetchSettings()
-    // Initial status fetch
-    getPipelineStatus().then(res => {
-      store.setQueue(res.data.queue || [])
+    // V2 state'i yükle
+    v2GetState().then(res => {
+      store.setV2State(res.data)
     }).catch(() => {})
 
-    return () => store.disconnect()
+    const interval = setInterval(() => {
+      v2GetState().then(res => {
+        store.setV2State(res.data)
+      }).catch(() => {})
+    }, 5000)
+
+    return () => {
+      store.disconnect()
+      clearInterval(interval)
+    }
   }, [])
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [store.logs])
 
-  const handleStart = async () => {
-    const pairs = selectedSymbols.map(sym => ({
-      symbol: sym,
-      strategy,
-      timeframes: strategy === 'swinginess' ? ['tick'] : selectedTFs,
-    }))
+  // Reset selection when step changes
+  useEffect(() => {
+    setSelectedRow(null)
+    setExpandedRow(null)
+  }, [v2.currentStep])
+
+  const currentStepKey = STEP_KEYS[v2.currentStep] || ''
+  const currentTop10 = v2.stepResults[currentStepKey] || []
+  const isStepRunning = v2.stepStatus === 'running' || store.running
+  const isAwaitingSelection = v2.stepStatus === 'awaiting_selection' && currentTop10.length > 0
+  const isPipelineComplete = v2.stepStatus === 'completed'
+
+  // Daha önce tamamlanmış adımın top-10'unu göstermek için
+  const getVisibleTop10 = (): V2Top10Entry[] => {
+    if (currentTop10.length > 0) return currentTop10
+    // Eğer mevcut adımda sonuç yoksa, önceki tamamlanmış adımı kontrol et
+    for (let i = v2.currentStep - 1; i >= 0; i--) {
+      const key = STEP_KEYS[i]
+      if (v2.stepResults[key]?.length > 0) return v2.stepResults[key]
+    }
+    return []
+  }
+
+  const handleChangeTimeframe = async (tf: string) => {
     try {
-      await startPipeline(pairs)
+      const res = await v2UpdateSettings({ timeframe: tf })
+      store.setV2State(res.data.state)
+    } catch (e: any) {
+      store.addLog({ message: `Timeframe değiştirme hatası: ${e.message}`, level: 'error' })
+    }
+  }
+
+  const handleChangeTrials = async (n: number) => {
+    try {
+      const res = await v2UpdateSettings({ n_trials: n })
+      store.setV2State(res.data.state)
+    } catch (e: any) {
+      store.addLog({ message: `Trial sayısı değiştirme hatası: ${e.message}`, level: 'error' })
+    }
+  }
+
+  const handleInit = async () => {
+    try {
+      store.v2Reset()
+      store.clearLogs()
+      await v2Init(symbol, timeframe, nTrials)
+      const res = await v2GetState()
+      store.setV2State(res.data)
     } catch (e: any) {
       store.addLog({ message: `Başlatma hatası: ${e.message}`, level: 'error' })
     }
   }
 
+  const handleStartStep = async () => {
+    try {
+      setSelectedRow(null)
+      setExpandedRow(null)
+      store.v2SetStepRunning(currentStepKey)
+      await v2StepStart(currentStepKey)
+    } catch (e: any) {
+      store.addLog({ message: `Adım başlatma hatası: ${e.message}`, level: 'error' })
+    }
+  }
+
+  const handleSelect = async () => {
+    if (selectedRow === null) return
+    try {
+      const res = await v2StepSelect(currentStepKey, selectedRow)
+      if (res.data.state) {
+        store.setV2State(res.data.state)
+      }
+      setSelectedRow(null)
+      setExpandedRow(null)
+    } catch (e: any) {
+      store.addLog({ message: `Seçim hatası: ${e.message}`, level: 'error' })
+    }
+  }
+
   const handleStop = async () => {
     try {
-      await stopPipeline()
+      await v2Stop()
     } catch (e: any) {
       store.addLog({ message: `Durdurma hatası: ${e.message}`, level: 'error' })
     }
   }
 
-  const toggleSymbol = (sym: string) => {
-    setSelectedSymbols(prev =>
-      prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]
-    )
-  }
-
-  const toggleTF = (tf: string) => {
-    setSelectedTFs(prev =>
-      prev.includes(tf) ? prev.filter(t => t !== tf) : [...prev, tf]
-    )
-  }
-
-  const statusIcon = (status: string) => {
-    switch (status) {
-      case 'completed': return <CheckCircle2 className="w-4 h-4 text-green-400" />
-      case 'running': return <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
-      case 'failed': return <XCircle className="w-4 h-4 text-red-400" />
-      case 'queued': return <Clock className="w-4 h-4 text-yellow-400" />
-      default: return <Clock className="w-4 h-4 text-gray-400" />
+  const handleReset = async () => {
+    try {
+      await v2Reset()
+      store.v2Reset()
+      store.clearLogs()
+      setSelectedRow(null)
+      setExpandedRow(null)
+    } catch (e: any) {
+      store.addLog({ message: `Reset hatası: ${e.message}`, level: 'error' })
     }
   }
 
-  const statusLabel = (status: string) => {
-    const map: Record<string, string> = {
-      queued: 'Bekliyor', running: 'Çalışıyor', completed: 'Tamamlandı',
-      failed: 'Başarısız', downloading: 'İndiriliyor',
-    }
-    return map[status] || status
-  }
+  const fmtNum = (n: number, dec = 1) =>
+    typeof n === 'number' ? n.toFixed(dec) : '—'
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* SOL PANEL — Başlatma */}
-      <div className="space-y-4">
-        {/* Pair Seçimi */}
-        <div className="bg-surface rounded-xl p-4 border border-border">
-          <h3 className="text-sm font-medium text-gray-400 mb-3">Sembol Seçimi</h3>
-          <div className="grid grid-cols-3 gap-2">
-            {SYMBOLS.map(sym => (
-              <button
-                key={sym}
-                onClick={() => toggleSymbol(sym)}
-                className={`px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                  selectedSymbols.includes(sym)
-                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/50'
-                    : 'bg-surface-hover text-gray-400 border border-border hover:border-gray-500'
-                }`}
-              >
-                {sym.replace('USDT', '')}
-              </button>
-            ))}
-          </div>
-        </div>
+    <div className="flex flex-col gap-6 max-w-[1400px] mx-auto">
 
-        {/* Strateji Seçimi */}
-        <div className="bg-surface rounded-xl p-4 border border-border">
-          <h3 className="text-sm font-medium text-gray-400 mb-3">Strateji</h3>
-          <div className="space-y-2">
-            {STRATEGIES.map(s => (
-              <button
-                key={s.value}
-                onClick={() => setStrategy(s.value)}
-                className={`w-full px-4 py-3 rounded-lg text-left transition-all ${
-                  strategy === s.value
-                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/50'
-                    : 'bg-surface-hover text-gray-400 border border-border hover:border-gray-500'
-                }`}
-              >
-                <div className="font-medium">{s.label}</div>
-                <div className="text-xs mt-1 opacity-60">
-                  {s.value === 'pmax_kc' ? '5 round otomatik pipeline (R1→R5)' : 'Tek geçişli Optuna optimizasyonu'}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* ===== STEPPER BAR ===== */}
+      <div className="bg-surface rounded-xl border border-border p-5">
+        <div className="flex items-center justify-between">
+          {STEP_LABELS.map((label, i) => {
+            const key = STEP_KEYS[i]
+            const isCompleted = v2.selectedIndices[key] !== undefined
+            const isActive = v2.active && v2.currentStep === i
 
-        {/* Timeframe Seçimi (sadece PMax+KC) */}
-        {strategy === 'pmax_kc' && (
-          <div className="bg-surface rounded-xl p-4 border border-border">
-            <h3 className="text-sm font-medium text-gray-400 mb-3">Timeframe</h3>
-            <div className="flex gap-2">
-              {TIMEFRAMES.map(tf => (
-                <button
-                  key={tf}
-                  onClick={() => toggleTF(tf)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    selectedTFs.includes(tf)
-                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/50'
-                      : 'bg-surface-hover text-gray-400 border border-border hover:border-gray-500'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Başlat / Durdur */}
-        <div className="flex gap-3">
-          <button
-            onClick={handleStart}
-            disabled={store.running || selectedSymbols.length === 0}
-            className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-xl font-bold text-lg transition-all"
-          >
-            {store.running ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <Play className="w-5 h-5" />
-            )}
-            {store.running ? 'ÇALIŞIYOR...' : 'BAŞLAT'}
-          </button>
-          {store.running && (
-            <button
-              onClick={handleStop}
-              className="px-6 py-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-all"
-            >
-              <Square className="w-5 h-5" />
-            </button>
-          )}
-        </div>
-
-        {/* Kuyruk */}
-        <div className="bg-surface rounded-xl p-4 border border-border">
-          <h3 className="text-sm font-medium text-gray-400 mb-3">Kuyruk</h3>
-          {store.queue.length === 0 ? (
-            <p className="text-gray-500 text-sm">Kuyruk boş — yukarıdan pair seçip başlatın</p>
-          ) : (
-            <div className="space-y-2">
-              {store.queue.map(job => (
-                <div
-                  key={job.id}
-                  className={`flex items-center justify-between px-3 py-2 rounded-lg border ${
-                    job.status === 'running' ? 'border-blue-500/50 bg-blue-500/10' : 'border-border bg-surface-hover'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    {statusIcon(job.status)}
-                    <span className="font-medium text-sm">{job.symbol}</span>
-                    <span className="text-xs text-gray-500">{job.strategy}</span>
-                    {job.current_timeframe && (
-                      <span className="text-xs text-blue-400">{job.current_timeframe}</span>
+            return (
+              <Fragment key={key}>
+                {i > 0 && (
+                  <div className={`flex-1 h-px mx-3 ${
+                    isCompleted ? 'bg-emerald-500' : 'bg-border'
+                  }`} />
+                )}
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold
+                    ${isCompleted
+                      ? 'bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/40'
+                      : isActive
+                        ? 'bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/60'
+                        : 'bg-surface-hover text-gray-500 ring-1 ring-border'
+                    }`}
+                  >
+                    {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : i + 1}
+                  </div>
+                  <div>
+                    <div className={`text-sm font-semibold ${
+                      isCompleted ? 'text-emerald-400' : isActive ? 'text-blue-400' : 'text-gray-500'
+                    }`}>
+                      {label}
+                    </div>
+                    {isActive && v2.stepStatus !== 'idle' && (
+                      <div className={`text-[10px] mt-0.5 ${
+                        v2.stepStatus === 'running' ? 'text-blue-400' :
+                        v2.stepStatus === 'awaiting_selection' ? 'text-amber-400' :
+                        'text-gray-500'
+                      }`}>
+                        {v2.stepStatus === 'running' ? 'Çalışıyor...' :
+                         v2.stepStatus === 'awaiting_selection' ? 'Seçim Bekliyor' : ''}
+                      </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    {job.status === 'running' && (
-                      <span className="text-xs text-blue-400">
-                        R{job.current_round}/{job.total_rounds}
-                      </span>
-                    )}
-                    <span className="text-xs text-gray-500">{statusLabel(job.status)}</span>
-                  </div>
                 </div>
-              ))}
-            </div>
-          )}
+              </Fragment>
+            )
+          })}
         </div>
       </div>
 
-      {/* SAĞ PANEL — Canlı İzleme */}
-      <div className="space-y-4">
-        {/* Round Timeline */}
-        {store.running && (
-          <div className="bg-surface rounded-xl p-4 border border-border">
-            <h3 className="text-sm font-medium text-gray-400 mb-3">
-              <Zap className="w-4 h-4 inline mr-1 text-yellow-400" />
-              Aktif Optimizasyon
-            </h3>
+      {/* ===== MAIN GRID ===== */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-            {/* Round indicators */}
-            <div className="flex gap-1 mb-4">
-              {[1, 2, 3, 4, 5].map(r => (
-                <div
-                  key={r}
-                  className={`flex-1 h-2 rounded-full ${
-                    r < store.currentRound ? 'bg-green-500'
-                    : r === store.currentRound ? 'bg-blue-500 animate-pulse'
-                    : 'bg-gray-700'
-                  }`}
-                  title={ROUND_NAMES[r]}
-                />
-              ))}
-            </div>
+        {/* SOL PANEL — Kontrol + Kilitli Parametreler */}
+        <div className="space-y-4">
 
-            <div className="text-center mb-3">
-              <div className="text-lg font-bold text-white">
-                R{store.currentRound}: {ROUND_NAMES[store.currentRound] || store.currentRoundName}
-              </div>
-              <div className="text-sm text-gray-400">
-                Trial {store.completedTrials} / {store.totalTrials}
-              </div>
-            </div>
+          {/* Pipeline Başlatma */}
+          {!v2.active && !isPipelineComplete && (
+            <div className="bg-surface rounded-xl p-5 border border-border">
+              <h3 className="text-sm font-semibold text-gray-300 mb-4">Pipeline V2 Başlat</h3>
 
-            <ProgressBar
-              progress={store.totalTrials > 0 ? Math.round(store.completedTrials / store.totalTrials * 100) : 0}
-            />
-
-            {/* Best metrics */}
-            <div className="grid grid-cols-3 gap-3 mt-4">
-              <div className="text-center">
-                <div className="text-xs text-gray-500">En İyi OOS</div>
-                <div className={`text-lg font-bold ${store.bestOosNet > 0 ? 'text-green-400' : 'text-gray-400'}`}>
-                  {store.bestOosNet > 0 ? `+${store.bestOosNet.toFixed(1)}%` : '—'}
-                </div>
-              </div>
-              <div className="text-center">
-                <div className="text-xs text-gray-500">En Düşük DD</div>
-                <div className="text-lg font-bold text-yellow-400">
-                  {store.bestDD > 0 ? `${store.bestDD.toFixed(1)}%` : '—'}
-                </div>
-              </div>
-              <div className="text-center">
-                <div className="text-xs text-gray-500">En İyi Ratio</div>
-                <div className="text-lg font-bold text-blue-400">
-                  {store.bestRatio > 0 ? store.bestRatio.toFixed(1) : '—'}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Top 10 Trials (son round) */}
-        {store.top10.length > 0 && (
-          <div className="bg-surface rounded-xl p-4 border border-border">
-            <h3 className="text-sm font-medium text-gray-400 mb-3">
-              Son Round Top 10
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-gray-500 border-b border-border">
-                    <th className="text-left py-1 px-2">#</th>
-                    <th className="text-right py-1 px-2">OOS%</th>
-                    <th className="text-right py-1 px-2">DD%</th>
-                    <th className="text-right py-1 px-2">Ratio</th>
-                    <th className="text-right py-1 px-2">WR%</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {store.top10.map((t, i) => (
-                    <tr key={t.tid} className={`border-b border-border/30 ${i === 0 ? 'bg-green-500/10' : ''}`}>
-                      <td className="py-1 px-2 text-gray-400">{i + 1}</td>
-                      <td className={`py-1 px-2 text-right font-medium ${t.oos_net > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {t.oos_net > 0 ? '+' : ''}{t.oos_net.toFixed(1)}
-                      </td>
-                      <td className="py-1 px-2 text-right text-yellow-400">{t.dd.toFixed(1)}</td>
-                      <td className="py-1 px-2 text-right text-blue-400 font-medium">{t.ratio.toFixed(1)}</td>
-                      <td className="py-1 px-2 text-right text-gray-300">{t.wr.toFixed(1)}</td>
-                    </tr>
+              {/* Sembol */}
+              <div className="mb-3">
+                <label className="text-xs text-gray-500 mb-1.5 block">Sembol</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {SYMBOLS.map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setSymbol(s)}
+                      className={`px-2 py-1.5 rounded text-xs font-medium transition-all ${
+                        symbol === s
+                          ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/40'
+                          : 'bg-surface-hover text-gray-400 hover:text-gray-300'
+                      }`}
+                    >
+                      {s.replace('USDT', '')}
+                    </button>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* Log Viewer */}
-        <div className="bg-surface rounded-xl p-4 border border-border">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-sm font-medium text-gray-400">Log</h3>
-            <button
-              onClick={() => store.clearLogs()}
-              className="text-xs text-gray-500 hover:text-gray-300"
-            >
-              Temizle
-            </button>
-          </div>
-          <div className="h-64 overflow-y-auto font-mono text-xs space-y-0.5 bg-surface-dark rounded-lg p-2">
-            {store.logs.length === 0 ? (
-              <p className="text-gray-600">Pipeline başlatıldığında loglar burada görünecek...</p>
-            ) : (
-              store.logs.map((log, i) => (
-                <div
-                  key={i}
-                  className={`${
-                    log.level === 'error' ? 'text-red-400'
-                    : log.level === 'success' ? 'text-green-400'
-                    : log.level === 'warn' ? 'text-yellow-400'
-                    : 'text-gray-400'
-                  }`}
-                >
-                  <span className="text-gray-600">[{log.timestamp}]</span> {log.message}
                 </div>
-              ))
-            )}
-            <div ref={logEndRef} />
+              </div>
+
+              {/* Timeframe */}
+              <div className="mb-3">
+                <label className="text-xs text-gray-500 mb-1.5 block">Timeframe</label>
+                <div className="flex gap-1.5">
+                  {TIMEFRAMES.map(tf => (
+                    <button
+                      key={tf}
+                      onClick={() => setTimeframe(tf)}
+                      className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${
+                        timeframe === tf
+                          ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/40'
+                          : 'bg-surface-hover text-gray-400 hover:text-gray-300'
+                      }`}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Trial Count */}
+              <div className="mb-4">
+                <label className="text-xs text-gray-500 mb-1.5 block">Trial Sayısı</label>
+                <div className="flex gap-1.5">
+                  {TRIAL_OPTIONS.map(n => (
+                    <button
+                      key={n}
+                      onClick={() => setNTrials(n)}
+                      className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${
+                        nTrials === n
+                          ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/40'
+                          : 'bg-surface-hover text-gray-400 hover:text-gray-300'
+                      }`}
+                    >
+                      {n.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={handleInit}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-sm transition-all"
+              >
+                <Zap className="w-4 h-4" />
+                Pipeline V2 Başlat
+              </button>
+            </div>
+          )}
+
+          {/* Aktif Adım Kontrolü */}
+          {v2.active && (
+            <div className="bg-surface rounded-xl p-5 border border-border">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-300">
+                  Adım {v2.currentStep + 1}: {STEP_LABELS[v2.currentStep]}
+                </h3>
+                <span className="text-[10px] text-gray-500 bg-surface-hover px-2 py-0.5 rounded">
+                  {v2.symbol}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mb-3">{STEP_DESCRIPTIONS[v2.currentStep]}</p>
+
+              {v2.stepStatus === 'idle' && (
+                <>
+                  {/* Timeframe + Trial seçimi */}
+                  <div className="flex gap-3 mb-3">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-gray-500 mb-1 block">Timeframe</label>
+                      <div className="flex gap-1">
+                        {TIMEFRAMES.map(tf => (
+                          <button
+                            key={tf}
+                            onClick={() => handleChangeTimeframe(tf)}
+                            className={`flex-1 px-1.5 py-1 rounded text-[11px] font-medium transition-all ${
+                              v2.timeframe === tf
+                                ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/40'
+                                : 'bg-surface-hover text-gray-500 hover:text-gray-300'
+                            }`}
+                          >
+                            {tf}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] text-gray-500 mb-1 block">Trial</label>
+                      <div className="flex gap-1">
+                        {TRIAL_OPTIONS.map(n => (
+                          <button
+                            key={n}
+                            onClick={() => handleChangeTrials(n)}
+                            className={`flex-1 px-1 py-1 rounded text-[11px] font-medium transition-all ${
+                              v2.nTrials === n
+                                ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/40'
+                                : 'bg-surface-hover text-gray-500 hover:text-gray-300'
+                            }`}
+                          >
+                            {n >= 1000 ? `${n / 1000}K` : n}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleStartStep}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold text-sm transition-all"
+                  >
+                    <Play className="w-4 h-4" />
+                    Optimizasyonu Başlat
+                  </button>
+                </>
+              )}
+
+              {isStepRunning && (
+                <>
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
+                      <span>Trial {store.completedTrials} / {store.totalTrials}</span>
+                      <span>{store.totalTrials > 0 ? Math.round(store.completedTrials / store.totalTrials * 100) : 0}%</span>
+                    </div>
+                    <ProgressBar
+                      progress={store.totalTrials > 0 ? Math.round(store.completedTrials / store.totalTrials * 100) : 0}
+                    />
+                  </div>
+
+                  {/* Best Metrics */}
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <div className="bg-surface-hover rounded-lg p-2 text-center">
+                      <div className="text-[10px] text-gray-500">Net</div>
+                      <div className={`text-sm font-bold ${store.bestOosNet > 0 ? 'text-emerald-400' : 'text-gray-500'}`}>
+                        {store.bestOosNet !== 0 ? `${store.bestOosNet > 0 ? '+' : ''}${fmtNum(store.bestOosNet)}%` : '—'}
+                      </div>
+                    </div>
+                    <div className="bg-surface-hover rounded-lg p-2 text-center">
+                      <div className="text-[10px] text-gray-500">DD</div>
+                      <div className="text-sm font-bold text-amber-400">
+                        {store.bestDD > 0 ? `${fmtNum(store.bestDD)}%` : '—'}
+                      </div>
+                    </div>
+                    <div className="bg-surface-hover rounded-lg p-2 text-center">
+                      <div className="text-[10px] text-gray-500">Ratio</div>
+                      <div className="text-sm font-bold text-blue-400">
+                        {store.bestRatio > 0 ? fmtNum(store.bestRatio) : '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Fold indicators */}
+                  {store.foldResults.length > 0 && (
+                    <div className="flex gap-0.5 mb-3">
+                      {store.foldResults.map((f, i) => (
+                        <div
+                          key={i}
+                          className={`flex-1 h-2 rounded-sm ${
+                            f.test_net > 0 ? 'bg-emerald-500' : 'bg-red-500'
+                          }`}
+                          title={`Fold ${f.fold}: ${f.test_net > 0 ? '+' : ''}${f.test_net}%`}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleStop}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600/80 hover:bg-red-600 text-white rounded-lg font-medium text-sm transition-all"
+                  >
+                    <Square className="w-3.5 h-3.5" />
+                    Durdur
+                  </button>
+                </>
+              )}
+
+              {isAwaitingSelection && (
+                <button
+                  onClick={handleSelect}
+                  disabled={selectedRow === null}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-semibold text-sm transition-all"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                  {selectedRow !== null
+                    ? `#${selectedRow + 1} Seç → Sonraki Adım`
+                    : 'Tablodan bir sonuç seçin'
+                  }
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Pipeline Tamamlandı */}
+          {isPipelineComplete && (
+            <div className="bg-surface rounded-xl p-5 border border-emerald-500/30">
+              <div className="flex items-center gap-2 mb-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-sm font-semibold text-emerald-400">Pipeline Tamamlandı</h3>
+              </div>
+              <p className="text-xs text-gray-400 mb-4">
+                Tüm adımlar tamamlandı. Seçilen parametreler aşağıda görüntüleniyor.
+              </p>
+              <button
+                onClick={handleReset}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-surface-hover hover:bg-border text-gray-300 rounded-lg font-medium text-sm transition-all"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Yeni Pipeline Başlat
+              </button>
+            </div>
+          )}
+
+          {/* Kilitli Parametreler */}
+          {Object.keys(v2.lockedParams).length > 0 && (
+            <div className="bg-surface rounded-xl p-5 border border-border">
+              <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                <Lock className="w-3.5 h-3.5 text-amber-400" />
+                Kilitli Parametreler
+              </h3>
+              <div className="space-y-3">
+                {Object.entries(v2.lockedParams).map(([category, params]) => (
+                  <LockedParamSection key={category} category={category} params={params as Record<string, any>} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Reset Butonu */}
+          {(v2.active || isPipelineComplete) && (
+            <button
+              onClick={handleReset}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-gray-500 hover:text-gray-300 text-xs transition-all"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Pipeline Sıfırla
+            </button>
+          )}
+        </div>
+
+        {/* ORTA + SAĞ PANEL — Top-10 Tablosu + Log */}
+        <div className="lg:col-span-2 space-y-4">
+
+          {/* Top-10 Tablosu */}
+          {(isAwaitingSelection || isPipelineComplete) && (
+            <Top10Table
+              top10={currentTop10.length > 0 ? currentTop10 : getVisibleTop10()}
+              selectedRow={selectedRow}
+              expandedRow={expandedRow}
+              onSelect={isAwaitingSelection ? setSelectedRow : undefined}
+              onExpand={(i) => setExpandedRow(expandedRow === i ? null : i)}
+              isKelly={currentStepKey === 'kelly_dyncomp'}
+            />
+          )}
+
+          {/* Önceki adımların sonuçları (completed steps) */}
+          {!isAwaitingSelection && !isPipelineComplete && v2.active && v2.stepStatus !== 'running' && (
+            <PreviousStepResults v2={v2} />
+          )}
+
+          {/* Live Progress (running) */}
+          {isStepRunning && store.foldResults.length > 0 && (
+            <div className="bg-surface rounded-xl p-5 border border-border">
+              <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-blue-400" />
+                Haftalık Sonuçlar ({store.foldResults.filter(f => f.test_net > 0).length}/{store.foldResults.length} karlı)
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-gray-500 border-b border-border">
+                      <th className="text-left py-1.5 px-2 font-medium">Fold</th>
+                      <th className="text-left py-1.5 px-2 font-medium">Dönem</th>
+                      <th className="text-right py-1.5 px-2 font-medium">Net%</th>
+                      <th className="text-right py-1.5 px-2 font-medium">DD%</th>
+                      <th className="text-right py-1.5 px-2 font-medium">WR%</th>
+                      <th className="text-right py-1.5 px-2 font-medium">Trade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {store.foldResults.map(f => (
+                      <tr key={f.fold} className={`border-b border-border/20 ${
+                        f.test_net > 0 ? 'bg-emerald-500/5' : 'bg-red-500/5'
+                      }`}>
+                        <td className="py-1.5 px-2 text-gray-400">{f.fold}</td>
+                        <td className="py-1.5 px-2 text-gray-400 text-[10px]">{f.test_period}</td>
+                        <td className={`py-1.5 px-2 text-right font-semibold ${f.test_net > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {f.test_net > 0 ? '+' : ''}{fmtNum(f.test_net)}
+                        </td>
+                        <td className="py-1.5 px-2 text-right text-amber-400">{fmtNum(f.test_dd)}</td>
+                        <td className="py-1.5 px-2 text-right text-gray-300">{fmtNum(f.test_wr, 0)}</td>
+                        <td className="py-1.5 px-2 text-right text-gray-400">{f.test_trades}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Walk-Forward Aggregate Summary */}
+          {store.wfSummary?.aggregate && !isStepRunning && (
+            <div className="bg-surface rounded-xl p-5 border border-emerald-500/20">
+              <h3 className="text-sm font-semibold text-emerald-400 mb-3 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4" />
+                Walk-Forward Özet
+              </h3>
+              <div className="grid grid-cols-4 gap-2">
+                <MetricBox label="Karlı Hafta" value={`${store.wfSummary.aggregate.profitable_weeks}/${store.wfSummary.aggregate.total_weeks}`} sub={`${fmtNum(store.wfSummary.aggregate.win_rate_weeks, 0)}%`} />
+                <MetricBox label="Toplam Net" value={`${store.wfSummary.aggregate.total_net > 0 ? '+' : ''}${fmtNum(store.wfSummary.aggregate.total_net)}%`} color={store.wfSummary.aggregate.total_net > 0 ? 'emerald' : 'red'} />
+                <MetricBox label="Max DD" value={`${fmtNum(store.wfSummary.aggregate.max_dd)}%`} color="amber" />
+                <MetricBox label="Toplam Trade" value={`${store.wfSummary.aggregate.total_trades}`} />
+              </div>
+            </div>
+          )}
+
+          {/* Log Viewer */}
+          <div className="bg-surface rounded-xl p-4 border border-border">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-xs font-semibold text-gray-400">Log</h3>
+              <button
+                onClick={() => store.clearLogs()}
+                className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors"
+              >
+                Temizle
+              </button>
+            </div>
+            <div className="h-48 overflow-y-auto font-mono text-[11px] space-y-0.5 bg-surface-dark rounded-lg p-2">
+              {store.logs.length === 0 ? (
+                <p className="text-gray-600">Pipeline başlatıldığında loglar burada görünecek...</p>
+              ) : (
+                store.logs.map((log, i) => (
+                  <div
+                    key={i}
+                    className={`${
+                      log.level === 'error' ? 'text-red-400'
+                      : log.level === 'success' ? 'text-emerald-400'
+                      : log.level === 'warn' ? 'text-amber-400'
+                      : 'text-gray-500'
+                    }`}
+                  >
+                    <span className="text-gray-700">[{log.timestamp}]</span> {log.message}
+                  </div>
+                ))
+              )}
+              <div ref={logEndRef} />
+            </div>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ============================================================
+// Sub-Components
+// ============================================================
+
+function LockedParamSection({ category, params }: { category: string; params: Record<string, any> }) {
+  const [open, setOpen] = useState(false)
+  const labels: Record<string, string> = { pmax: 'PMax', kc: 'Keltner Channel', kelly: 'Kelly/DynComp', dynsl: 'DynSL' }
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 transition-colors w-full"
+      >
+        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        <span className="text-amber-400/80">{labels[category] || category}</span>
+      </button>
+      {open && (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 mt-1.5 ml-4">
+          {Object.entries(params).map(([k, v]) => (
+            <div key={k} className="flex justify-between text-[10px]">
+              <span className="text-gray-500">{PARAM_LABELS[k] || k}</span>
+              <span className="text-gray-300 font-mono">
+                {typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : String(v)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MetricBox({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  const colorClass = color === 'emerald' ? 'text-emerald-400'
+    : color === 'red' ? 'text-red-400'
+    : color === 'amber' ? 'text-amber-400'
+    : 'text-gray-200'
+
+  return (
+    <div className="bg-surface-hover rounded-lg p-2.5 text-center">
+      <div className="text-[10px] text-gray-500">{label}</div>
+      <div className={`text-base font-bold ${colorClass}`}>{value}</div>
+      {sub && <div className="text-[10px] text-gray-500">{sub}</div>}
+    </div>
+  )
+}
+
+function Top10Table({
+  top10, selectedRow, expandedRow, onSelect, onExpand, isKelly,
+}: {
+  top10: V2Top10Entry[]
+  selectedRow: number | null
+  expandedRow: number | null
+  onSelect?: (i: number) => void
+  onExpand: (i: number) => void
+  isKelly: boolean
+}) {
+  if (top10.length === 0) return null
+
+  const fmtNum = (n: number, dec = 1) => typeof n === 'number' ? n.toFixed(dec) : '—'
+
+  return (
+    <div className="bg-surface rounded-xl p-5 border border-border">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+          <BarChart3 className="w-4 h-4 text-blue-400" />
+          Top-10 Sonuçlar
+        </h3>
+        {onSelect && (
+          <span className="text-[10px] text-amber-400/80 bg-amber-400/10 px-2 py-0.5 rounded">
+            Bir sonuç seçin
+          </span>
+        )}
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 border-b border-border text-[11px]">
+              {onSelect && <th className="w-8 py-2 px-2"></th>}
+              <th className="text-left py-2 px-2 font-semibold">#</th>
+              <th className="text-right py-2 px-2 font-semibold">Skor</th>
+              <th className="text-right py-2 px-2 font-semibold">Net %</th>
+              <th className="text-right py-2 px-2 font-semibold">Max DD %</th>
+              <th className="text-right py-2 px-2 font-semibold">WR %</th>
+              {isKelly && <th className="text-right py-2 px-2 font-semibold">Bakiye</th>}
+              <th className="text-right py-2 px-2 font-semibold">
+                {isKelly ? 'Trade' : 'Karlı Hafta'}
+              </th>
+              <th className="text-right py-2 px-2 font-semibold">Ratio</th>
+              <th className="w-6 py-2 px-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {top10.map((entry, i) => {
+              const isSelected = selectedRow === i
+              const isExpanded = expandedRow === i
+              const ratio = entry.max_dd > 0 ? (entry.total_net / entry.max_dd).toFixed(1) : '—'
+
+              return (
+                <Fragment key={entry.tid ?? i}>
+                  <tr
+                    onClick={() => onSelect?.(i)}
+                    className={`border-b border-border/20 transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-blue-500/15 ring-1 ring-blue-500/30'
+                        : i === 0
+                          ? 'bg-emerald-500/5 hover:bg-emerald-500/10'
+                          : 'hover:bg-white/[0.03]'
+                    }`}
+                  >
+                    {onSelect && (
+                      <td className="py-2 px-2">
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                          isSelected ? 'border-blue-500 bg-blue-500' : 'border-gray-600'
+                        }`}>
+                          {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                      </td>
+                    )}
+                    <td className="py-2 px-2 text-gray-400 font-semibold">{i + 1}</td>
+                    <td className="py-2 px-2 text-right text-blue-400 font-mono">{fmtNum(entry.score, 2)}</td>
+                    <td className={`py-2 px-2 text-right font-bold ${
+                      entry.total_net > 0 ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {entry.total_net > 0 ? '+' : ''}{fmtNum(entry.total_net)}
+                    </td>
+                    <td className="py-2 px-2 text-right text-amber-400">{fmtNum(entry.max_dd)}</td>
+                    <td className="py-2 px-2 text-right text-gray-300">{fmtNum(entry.avg_wr, 0)}</td>
+                    {isKelly && (
+                      <td className="py-2 px-2 text-right text-emerald-300 font-mono">
+                        {entry.balance ? `$${entry.balance.toLocaleString()}` : '—'}
+                      </td>
+                    )}
+                    <td className="py-2 px-2 text-right text-gray-400">
+                      {isKelly ? (entry.total_trades ?? '—') : (entry.profitable_weeks ?? '—')}
+                    </td>
+                    <td className={`py-2 px-2 text-right font-semibold ${
+                      Number(ratio) > 1 ? 'text-blue-400' : 'text-gray-500'
+                    }`}>
+                      {ratio}
+                    </td>
+                    <td className="py-2 px-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onExpand(i) }}
+                        className="text-gray-500 hover:text-gray-300 transition-colors"
+                      >
+                        {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      </button>
+                    </td>
+                  </tr>
+
+                  {/* Expanded Details */}
+                  {isExpanded && (
+                    <tr className="bg-surface-dark/50">
+                      <td colSpan={onSelect ? 10 : 9} className="px-4 py-3">
+                        <div className="flex gap-6">
+                          {/* Parametreler */}
+                          <div className="flex-1">
+                            <div className="text-[10px] text-gray-500 font-semibold mb-1.5 uppercase tracking-wider">
+                              Parametreler
+                            </div>
+                            <div className="grid grid-cols-3 gap-x-4 gap-y-0.5">
+                              {Object.entries(entry.params).map(([k, v]) => (
+                                <div key={k} className="flex justify-between text-[10px]">
+                                  <span className="text-gray-500">{PARAM_LABELS[k] || k}</span>
+                                  <span className="text-gray-300 font-mono">
+                                    {typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : String(v)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Haftalık sonuçlar (varsa) */}
+                          {entry.folds && entry.folds.length > 0 && (
+                            <div className="flex-1">
+                              <div className="text-[10px] text-gray-500 font-semibold mb-1.5 uppercase tracking-wider">
+                                Haftalık Sonuçlar
+                              </div>
+                              <div className="flex gap-0.5 mb-1">
+                                {entry.folds.map((f: any, fi: number) => (
+                                  <div
+                                    key={fi}
+                                    className={`flex-1 h-2 rounded-sm ${
+                                      f.test_net > 0 ? 'bg-emerald-500' : 'bg-red-500'
+                                    }`}
+                                    title={`Fold ${f.fold}: ${f.test_net > 0 ? '+' : ''}${f.test_net}%`}
+                                  />
+                                ))}
+                              </div>
+                              <div className="grid grid-cols-4 gap-1 text-[9px]">
+                                {entry.folds.map((f: any, fi: number) => (
+                                  <div key={fi} className={`text-center ${f.test_net > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {f.test_net > 0 ? '+' : ''}{f.test_net}%
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function PreviousStepResults({ v2 }: { v2: any }) {
+  // Tamamlanmış adımların sonuçlarını göster
+  const completedSteps = STEP_KEYS.filter(k => v2.selectedIndices[k] !== undefined)
+  if (completedSteps.length === 0) return null
+
+  return (
+    <div className="bg-surface rounded-xl p-5 border border-border">
+      <h3 className="text-sm font-semibold text-gray-300 mb-3">Tamamlanan Adımlar</h3>
+      <div className="space-y-2">
+        {completedSteps.map(key => {
+          const stepIdx = STEP_KEYS.indexOf(key)
+          const selectedIdx = v2.selectedIndices[key]
+          const top10 = v2.stepResults[key] || []
+          const selected = top10[selectedIdx]
+          if (!selected) return null
+
+          return (
+            <div key={key} className="bg-surface-hover rounded-lg p-3">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-xs font-medium text-gray-300">{STEP_LABELS[stepIdx]}</span>
+                </div>
+                <span className="text-[10px] text-gray-500">#{selectedIdx + 1} seçildi</span>
+              </div>
+              <div className="flex gap-4 text-[10px] text-gray-400">
+                <span>Net: <span className={selected.total_net > 0 ? 'text-emerald-400' : 'text-red-400'}>
+                  {selected.total_net > 0 ? '+' : ''}{selected.total_net?.toFixed(1)}%
+                </span></span>
+                <span>DD: <span className="text-amber-400">{selected.max_dd?.toFixed(1)}%</span></span>
+                <span>WR: <span className="text-gray-300">{selected.avg_wr?.toFixed(0)}%</span></span>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
