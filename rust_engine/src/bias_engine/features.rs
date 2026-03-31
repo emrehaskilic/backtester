@@ -1,6 +1,6 @@
 /// Bias Engine — Feature Computation (Section 2 of spec)
 ///
-/// 7 features computed from 5m OHLCV + buy_vol/sell_vol + OI:
+/// 8 features computed from 5m OHLCV + buy_vol/sell_vol + OI:
 ///   0. CVD Z-Score Micro  (window=12,  1H)
 ///   1. CVD Z-Score Macro  (window=288, 1D)
 ///   2. OI Change ATR-Norm (window=288)
@@ -8,10 +8,11 @@
 ///   4. Volume Z-Score Macro (window=288)
 ///   5. Imbalance Smoothed (EMA span=12)
 ///   6. ATR Percentile     (window=288)
+///   7. VWAP Distance      (window=48)
 
 const EPSILON: f64 = 1e-10;
 
-pub const N_FEATURES: usize = 7;
+pub const N_FEATURES: usize = 8;
 
 pub const FEATURE_NAMES: [&str; N_FEATURES] = [
     "cvd_micro",
@@ -21,6 +22,7 @@ pub const FEATURE_NAMES: [&str; N_FEATURES] = [
     "vol_macro",
     "imbalance_smooth",
     "atr_percentile",
+    "vwap_distance",
 ];
 
 pub struct FeatureArrays {
@@ -88,6 +90,9 @@ pub fn compute_features(
     // 6. ATR Percentile (window=288)
     let atr_percentile = rolling_rank(&atr_bar, 288);
 
+    // 7. VWAP Distance (window=48)
+    let vwap_dist = compute_vwap_distance(high, low, close, &total_vol, 48);
+
     FeatureArrays {
         data: [
             cvd_micro,
@@ -97,6 +102,7 @@ pub fn compute_features(
             vol_macro,
             imbalance_smooth,
             atr_percentile,
+            vwap_dist,
         ],
     }
 }
@@ -130,9 +136,10 @@ pub fn compute_features_with_params(
         .collect();
     let imbalance_smooth = ema(&raw_imbalance, params.imbalance_ema_span);
     let atr_percentile = rolling_rank(&atr_bar, params.atr_pct_window);
+    let vwap_dist = compute_vwap_distance(high, low, close, &total_vol, params.vwap_window);
 
     FeatureArrays {
-        data: [cvd_micro, cvd_macro, oi_change, vol_micro, vol_macro, imbalance_smooth, atr_percentile],
+        data: [cvd_micro, cvd_macro, oi_change, vol_micro, vol_macro, imbalance_smooth, atr_percentile, vwap_dist],
     }
 }
 
@@ -248,6 +255,97 @@ fn ema(data: &[f64], span: usize) -> Vec<f64> {
         }
     }
 
+    result
+}
+
+/// Rolling VWAP distance: z-score of (close - vwap) / vwap
+/// VWAP = sum(typical_price * volume) / sum(volume) over rolling window
+fn compute_vwap_distance(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    total_vol: &[f64],
+    window: usize,
+) -> Vec<f64> {
+    let n = close.len();
+    let mut result = vec![f64::NAN; n];
+    if n < window || window == 0 {
+        return result;
+    }
+
+    // typical_price * volume for each bar
+    let tp_vol: Vec<f64> = (0..n)
+        .map(|i| (high[i] + low[i] + close[i]) / 3.0 * total_vol[i])
+        .collect();
+
+    // Rolling sums
+    let mut sum_tpv = 0.0_f64;
+    let mut sum_vol = 0.0_f64;
+
+    // Seed first window
+    for j in 0..window {
+        sum_tpv += tp_vol[j];
+        sum_vol += total_vol[j];
+    }
+
+    // First VWAP at window-1
+    if sum_vol > EPSILON {
+        let vwap = sum_tpv / sum_vol;
+        result[window - 1] = (close[window - 1] - vwap) / vwap.max(EPSILON);
+    }
+
+    // Slide
+    for i in window..n {
+        sum_tpv += tp_vol[i] - tp_vol[i - window];
+        sum_vol += total_vol[i] - total_vol[i - window];
+
+        if sum_vol > EPSILON {
+            let vwap = sum_tpv / sum_vol;
+            result[i] = (close[i] - vwap) / vwap.max(EPSILON);
+        }
+    }
+
+    // Now z-score the raw distances for quantization compatibility
+    rolling_zscore_skipnan(&result, window)
+}
+
+/// Rolling z-score that skips NaN values in input
+fn rolling_zscore_skipnan(data: &[f64], window: usize) -> Vec<f64> {
+    let n = data.len();
+    let mut result = vec![f64::NAN; n];
+    if n < window {
+        return result;
+    }
+
+    for i in (window - 1)..n {
+        if data[i].is_nan() {
+            continue;
+        }
+        let start = i + 1 - window;
+        let mut sum = 0.0_f64;
+        let mut sum_sq = 0.0_f64;
+        let mut count = 0u32;
+        for j in start..=i {
+            if !data[j].is_nan() {
+                sum += data[j];
+                sum_sq += data[j] * data[j];
+                count += 1;
+            }
+        }
+        if count < 2 {
+            result[i] = 0.0;
+            continue;
+        }
+        let cf = count as f64;
+        let mean = sum / cf;
+        let var = (sum_sq / cf) - mean * mean;
+        let std = if var > 0.0 { var.sqrt() } else { 0.0 };
+        result[i] = if std > EPSILON {
+            (data[i] - mean) / std
+        } else {
+            0.0
+        };
+    }
     result
 }
 

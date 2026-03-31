@@ -35,6 +35,9 @@ pub struct GroupAParams {
 
     // Fallback
     pub ensemble_min_n: u32,          // default 50
+
+    // VWAP
+    pub vwap_window: usize,           // default 48
 }
 
 /// Group B: Scoring formula, MR, RSI, combination weights, regime, BTC correlation
@@ -106,6 +109,7 @@ impl Default for GroupAParams {
             temporal_max_reversals: 1,
             min_noise_stability: 0.80,
             ensemble_min_n: 50,
+            vwap_window: 48,
         }
     }
 }
@@ -182,6 +186,7 @@ pub fn group_a_specs() -> Vec<ParamSpec> {
         ParamSpec { name: "temporal_max_reversals", min: 0.0, max: 2.0, step: 1.0, is_int: true },
         ParamSpec { name: "min_noise_stability", min: 0.50, max: 0.95, step: 0.05, is_int: false },
         ParamSpec { name: "ensemble_min_n", min: 20.0, max: 200.0, step: 10.0, is_int: true },
+        ParamSpec { name: "vwap_window", min: 12.0, max: 288.0, step: 12.0, is_int: true },
     ]
 }
 
@@ -238,6 +243,7 @@ pub fn vec_to_group_a(vals: &[f64]) -> GroupAParams {
         temporal_max_reversals: vals[15] as usize,
         min_noise_stability: vals[16],
         ensemble_min_n: vals[17] as u32,
+        vwap_window: if vals.len() > 18 { vals[18] as usize } else { 48 },
     }
 }
 
@@ -284,6 +290,7 @@ pub fn group_a_to_vec(p: &GroupAParams) -> Vec<f64> {
         p.fdr_alpha, p.temporal_min_segments as f64,
         p.temporal_max_reversals as f64, p.min_noise_stability,
         p.ensemble_min_n as f64,
+        p.vwap_window as f64,
     ]
 }
 
