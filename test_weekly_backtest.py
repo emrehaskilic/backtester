@@ -4,6 +4,11 @@ Kasa: $1000, Margin: $25, Kaldıraç: 25x → Pozisyon: $625
 Her hafta sonu kar çekilir, $1000 ile tekrar başlanır.
 Liq: Kasa $0'a düşerse → o hafta biter, kayıp = kalan kasa - 1000
 Fee: %0.04 taker (giriş + çıkış)
+
+Pozisyon mantığı:
+- Reversal gelene kadar pozisyon tutulur
+- Sinyal long→short veya short→long olduğunda: kapat + ters aç
+- Aynı sinyal devam ediyorsa: pozisyon açık kalır, yeni trade yok
 """
 import numpy as np
 import pandas as pd
@@ -116,7 +121,7 @@ print(f"Kasa: ${INITIAL_CAPITAL}")
 print(f"Margin: ${MARGIN}, Kaldıraç: {LEVERAGE}x, Pozisyon: ${POSITION_SIZE}")
 print(f"Fee: %{FEE_RATE*100:.2f} taker (giriş+çıkış)")
 print(f"OOS başlangıç: {ts_1h[train_end].strftime('%Y-%m-%d')}")
-print(f"K={K} bar holding")
+print(f"Pozisyon: reversal gelene kadar tut")
 print()
 
 # Group OOS bars by week (Monday-Sunday)
@@ -135,9 +140,9 @@ weeks.append((week_start, len(week_labels)))
 
 print(f"Toplam hafta: {len(weeks)}")
 print()
-print("=" * 90)
-print(f"{'Hafta':>5} {'Tarih':>12} {'Kasa Başı':>10} {'Kasa Sonu':>10} {'Kar/Zarar':>10} {'Kar%':>7} {'Trade':>6} {'WR%':>6} {'Liq':>4}")
-print("=" * 90)
+print("=" * 100)
+print(f"{'Hafta':>5} {'Tarih':>12} {'Kasa Başı':>10} {'Kasa Sonu':>10} {'Kar/Zarar':>10} {'Kar%':>7} {'Trade':>6} {'WR%':>6} {'AvgHold':>8} {'Liq':>4}")
+print("=" * 100)
 
 total_withdrawn = 0.0
 total_weeks = 0
@@ -146,48 +151,112 @@ lose_weeks = 0
 liq_weeks = 0
 weekly_pnls = []
 
+# Global position state (carries across weeks — but capital resets)
+# At week start: if we have an open position from last week, close it first
+global_pos_dir = 0       # current position direction: +1, -1, or 0
+global_pos_entry_price = 0.0
+global_pos_entry_bar = 0  # bar index where position was opened
+
 for w_idx, (ws, we) in enumerate(weeks):
     capital = INITIAL_CAPITAL
     n_trades = 0
     n_wins = 0
     liquidated = False
+    hold_bars_total = 0
 
-    i = ws
-    while i < we:
+    # Week start: close any carried position at first bar's price
+    first_bar = train_end + ws
+    if global_pos_dir != 0 and first_bar < n_1h:
+        # Close carried position
+        exit_price = c_1h[first_bar]
+        # PnL accrued since entry — but capital was reset, so this trade
+        # was already accounted in previous week's close.
+        # Actually: previous week closed at last bar, so no carry needed.
+        pass
+
+    # Reset position at week start
+    pos_dir = 0
+    pos_entry_price = 0.0
+    pos_entry_bar = 0
+
+    for i in range(ws, we):
         bar_idx = train_end + i
-        if bar_idx + K >= n_1h:
+        if bar_idx >= n_1h:
             break
 
         d = direction[bar_idx]
         if d == 0:
-            d = 1  # default long
+            d = 1  # default long if neutral
 
-        entry_price = c_1h[bar_idx]
-        exit_price = c_1h[bar_idx + K]
+        price = c_1h[bar_idx]
 
-        # PnL calculation
-        ret = (exit_price - entry_price) / entry_price
-        trade_pnl = d * ret * POSITION_SIZE
+        if pos_dir == 0:
+            # No position → open
+            pos_dir = d
+            pos_entry_price = price
+            pos_entry_bar = bar_idx
+            # Entry fee
+            capital -= POSITION_SIZE * FEE_RATE
 
-        # Fees: entry + exit
-        fee = POSITION_SIZE * FEE_RATE * 2
+        elif d != pos_dir:
+            # REVERSAL → close current + open opposite
+            # Close PnL
+            ret = (price - pos_entry_price) / pos_entry_price
+            trade_pnl = pos_dir * ret * POSITION_SIZE
+            capital += trade_pnl
+            # Exit fee
+            capital -= POSITION_SIZE * FEE_RATE
 
-        capital += trade_pnl - fee
+            hold_bars = bar_idx - pos_entry_bar
+            hold_bars_total += hold_bars
+            n_trades += 1
+            if trade_pnl > 0:
+                n_wins += 1
+
+            # Liquidation check
+            if capital <= 0:
+                capital = 0
+                liquidated = True
+                pos_dir = 0
+                break
+
+            # Open opposite
+            pos_dir = d
+            pos_entry_price = price
+            pos_entry_bar = bar_idx
+            # Entry fee
+            capital -= POSITION_SIZE * FEE_RATE
+
+            if capital <= 0:
+                capital = 0
+                liquidated = True
+                pos_dir = 0
+                break
+
+        # else: same direction → hold, do nothing
+
+    # Week end: close open position at last bar
+    if pos_dir != 0 and not liquidated:
+        last_bar = train_end + we - 1
+        if last_bar >= n_1h:
+            last_bar = n_1h - 1
+        exit_price = c_1h[last_bar]
+        ret = (exit_price - pos_entry_price) / pos_entry_price
+        trade_pnl = pos_dir * ret * POSITION_SIZE
+        capital += trade_pnl
+        capital -= POSITION_SIZE * FEE_RATE  # exit fee
+
+        hold_bars = last_bar - pos_entry_bar
+        hold_bars_total += hold_bars
         n_trades += 1
         if trade_pnl > 0:
             n_wins += 1
-
-        # Liquidation check: kasa <= 0
-        if capital <= 0:
-            capital = 0
-            liquidated = True
-            break
-
-        i += K  # next trade after holding period
+        pos_dir = 0
 
     pnl = capital - INITIAL_CAPITAL
     pnl_pct = pnl / INITIAL_CAPITAL * 100
     wr = n_wins / n_trades * 100 if n_trades > 0 else 0
+    avg_hold = hold_bars_total / n_trades if n_trades > 0 else 0
 
     week_date = oos_dates[ws].strftime('%Y-%m-%d')
     liq_mark = "LIQ" if liquidated else ""
@@ -196,13 +265,13 @@ for w_idx, (ws, we) in enumerate(weeks):
     total_weeks += 1
     if pnl > 0:
         win_weeks += 1
-        total_withdrawn += pnl  # kar çekilir
+        total_withdrawn += pnl
     elif pnl < 0:
         lose_weeks += 1
     if liquidated:
         liq_weeks += 1
 
-    print(f"{w_idx+1:>5} {week_date:>12} ${INITIAL_CAPITAL:>9.2f} ${capital:>9.2f} ${pnl:>+9.2f} {pnl_pct:>+6.1f}% {n_trades:>5} {wr:>5.1f}% {liq_mark:>4}")
+    print(f"{w_idx+1:>5} {week_date:>12} ${INITIAL_CAPITAL:>9.2f} ${capital:>9.2f} ${pnl:>+9.2f} {pnl_pct:>+6.1f}% {n_trades:>5} {wr:>5.1f}% {avg_hold:>7.1f}h {liq_mark:>4}")
 
 # ═══════════════════════════════════════════════════════════════
 # ÖZET
