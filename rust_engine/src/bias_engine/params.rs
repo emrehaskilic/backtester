@@ -38,6 +38,13 @@ pub struct GroupAParams {
 
     // VWAP
     pub vwap_window: usize,           // default 48
+
+    // New features
+    pub momentum_window: usize,       // default 24
+    pub wick_window: usize,           // default 24
+    pub divergence_window: usize,     // default 48
+    pub oi_vol_window: usize,         // default 48
+    pub autocorr_window: usize,       // default 24
 }
 
 /// Group B: Scoring formula, MR, RSI, combination weights, regime, BTC correlation
@@ -110,6 +117,11 @@ impl Default for GroupAParams {
             min_noise_stability: 0.80,
             ensemble_min_n: 50,
             vwap_window: 48,
+            momentum_window: 24,
+            wick_window: 24,
+            divergence_window: 48,
+            oi_vol_window: 48,
+            autocorr_window: 24,
         }
     }
 }
@@ -187,6 +199,11 @@ pub fn group_a_specs() -> Vec<ParamSpec> {
         ParamSpec { name: "min_noise_stability", min: 0.50, max: 0.95, step: 0.05, is_int: false },
         ParamSpec { name: "ensemble_min_n", min: 20.0, max: 200.0, step: 10.0, is_int: true },
         ParamSpec { name: "vwap_window", min: 12.0, max: 288.0, step: 12.0, is_int: true },
+        ParamSpec { name: "momentum_window", min: 6.0, max: 96.0, step: 6.0, is_int: true },
+        ParamSpec { name: "wick_window", min: 6.0, max: 96.0, step: 6.0, is_int: true },
+        ParamSpec { name: "divergence_window", min: 12.0, max: 144.0, step: 12.0, is_int: true },
+        ParamSpec { name: "oi_vol_window", min: 12.0, max: 144.0, step: 12.0, is_int: true },
+        ParamSpec { name: "autocorr_window", min: 6.0, max: 96.0, step: 6.0, is_int: true },
     ]
 }
 
@@ -244,6 +261,11 @@ pub fn vec_to_group_a(vals: &[f64]) -> GroupAParams {
         min_noise_stability: vals[16],
         ensemble_min_n: vals[17] as u32,
         vwap_window: if vals.len() > 18 { vals[18] as usize } else { 48 },
+        momentum_window: if vals.len() > 19 { vals[19] as usize } else { 24 },
+        wick_window: if vals.len() > 20 { vals[20] as usize } else { 24 },
+        divergence_window: if vals.len() > 21 { vals[21] as usize } else { 48 },
+        oi_vol_window: if vals.len() > 22 { vals[22] as usize } else { 48 },
+        autocorr_window: if vals.len() > 23 { vals[23] as usize } else { 24 },
     }
 }
 
@@ -291,6 +313,11 @@ pub fn group_a_to_vec(p: &GroupAParams) -> Vec<f64> {
         p.temporal_max_reversals as f64, p.min_noise_stability,
         p.ensemble_min_n as f64,
         p.vwap_window as f64,
+        p.momentum_window as f64,
+        p.wick_window as f64,
+        p.divergence_window as f64,
+        p.oi_vol_window as f64,
+        p.autocorr_window as f64,
     ]
 }
 

@@ -2,10 +2,10 @@
 ///
 /// A **state** is a combination of (feature_index, quintile) pairs.
 /// Three depths:
-///   Depth 1 — single feature     :  8 × 5 = 40
-///   Depth 2 — feature pair       : 28 × 25 = 700
-///   Depth 3 — feature triple     : 56 × 125 = 7 000
-///   Total                                     = 7 740
+///   Depth 1 — single feature     : 13 × 5 = 65
+///   Depth 2 — feature pair       : 78 × 25 = 1 950
+///   Depth 3 — feature triple     : 286 × 125 = 35 750
+///   Total                                      = 37 765
 ///
 /// Compact encoding in u32:
 ///   bits 24-25 : depth (1, 2, or 3)
