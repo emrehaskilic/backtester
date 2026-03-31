@@ -233,7 +233,7 @@ print(f"\n{'='*60}")
 print(f"  STEP 3: Walk-Forward Validation (Rust)")
 print(f"{'='*60}")
 
-# TPE optimal Group A
+# TPE optimal Group A (26 params including new features)
 group_a = np.array([
     26,   # cvd_micro_window
     96,   # cvd_macro_window
@@ -253,6 +253,14 @@ group_a = np.array([
     0,    # temporal_max_reversals
     0.55, # min_noise_stability
     90,   # ensemble_min_n
+    48,   # vwap_window
+    24,   # momentum_window
+    24,   # wick_window
+    48,   # divergence_window
+    48,   # oi_vol_window
+    24,   # autocorr_window
+    4,    # mtf_4h_window
+    24,   # mtf_daily_window
 ], dtype=np.float64)
 
 # TPE optimal Group B (25 values including BTC params)

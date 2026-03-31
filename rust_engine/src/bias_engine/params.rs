@@ -39,12 +39,16 @@ pub struct GroupAParams {
     // VWAP
     pub vwap_window: usize,           // default 48
 
-    // New features
+    // New features (batch 1)
     pub momentum_window: usize,       // default 24
     pub wick_window: usize,           // default 24
     pub divergence_window: usize,     // default 48
     pub oi_vol_window: usize,         // default 48
     pub autocorr_window: usize,       // default 24
+
+    // New features (batch 2)
+    pub mtf_4h_window: usize,         // default 4
+    pub mtf_daily_window: usize,      // default 24
 }
 
 /// Group B: Scoring formula, MR, RSI, combination weights, regime, BTC correlation
@@ -106,7 +110,7 @@ impl Default for GroupAParams {
             atr_pct_window: 288,
             oi_change_window: 288,
             quant_window: 2016,
-            quantile_count: 5,
+            quantile_count: 7,
             k_horizon: 12,
             min_sample_size: 100,
             min_edge: 0.02,
@@ -122,6 +126,8 @@ impl Default for GroupAParams {
             divergence_window: 48,
             oi_vol_window: 48,
             autocorr_window: 24,
+            mtf_4h_window: 4,
+            mtf_daily_window: 24,
         }
     }
 }
@@ -204,6 +210,8 @@ pub fn group_a_specs() -> Vec<ParamSpec> {
         ParamSpec { name: "divergence_window", min: 12.0, max: 144.0, step: 12.0, is_int: true },
         ParamSpec { name: "oi_vol_window", min: 12.0, max: 144.0, step: 12.0, is_int: true },
         ParamSpec { name: "autocorr_window", min: 6.0, max: 96.0, step: 6.0, is_int: true },
+        ParamSpec { name: "mtf_4h_window", min: 2.0, max: 12.0, step: 1.0, is_int: true },
+        ParamSpec { name: "mtf_daily_window", min: 12.0, max: 72.0, step: 6.0, is_int: true },
     ]
 }
 
@@ -266,6 +274,8 @@ pub fn vec_to_group_a(vals: &[f64]) -> GroupAParams {
         divergence_window: if vals.len() > 21 { vals[21] as usize } else { 48 },
         oi_vol_window: if vals.len() > 22 { vals[22] as usize } else { 48 },
         autocorr_window: if vals.len() > 23 { vals[23] as usize } else { 24 },
+        mtf_4h_window: if vals.len() > 24 { vals[24] as usize } else { 4 },
+        mtf_daily_window: if vals.len() > 25 { vals[25] as usize } else { 24 },
     }
 }
 
@@ -318,6 +328,8 @@ pub fn group_a_to_vec(p: &GroupAParams) -> Vec<f64> {
         p.divergence_window as f64,
         p.oi_vol_window as f64,
         p.autocorr_window as f64,
+        p.mtf_4h_window as f64,
+        p.mtf_daily_window as f64,
     ]
 }
 

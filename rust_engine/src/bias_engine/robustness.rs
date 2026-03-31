@@ -14,7 +14,7 @@ use rayon::prelude::*;
 
 use super::features::N_FEATURES;
 use super::probability::{StateStats, PRIOR_STRENGTH};
-use super::quantize;
+use super::quantize::{self, MAX_BOUNDARIES};
 use super::state::{self, StateKey};
 
 /// Number of permutation shuffles
@@ -109,7 +109,7 @@ fn shuffle(data: &mut [u8], rng: &mut Rng) {
 pub fn run_robustness(
     close: &[f64],
     quintiles: &[Vec<u8>],
-    boundaries: &[Vec<[f64; 4]>],
+    boundaries: &[Vec<[f64; MAX_BOUNDARIES]>],
     features: &[Vec<f64>],
     outcomes: &[u8],
     baseline_bull_rate: f64,
@@ -197,6 +197,7 @@ pub fn run_robustness(
                 n_bars,
                 stats,
                 baseline_bull_rate,
+                5, // default q_count for legacy path
             );
 
             // 3. Temporal subsample test
@@ -340,12 +341,13 @@ fn noise_injection_test(
     features: &[Vec<f64>],
     feature_stds: &[f64],
     quintiles: &[Vec<u8>],
-    boundaries: &[Vec<[f64; 4]>],
+    boundaries: &[Vec<[f64; MAX_BOUNDARIES]>],
     outcomes: &[u8],
     valid_indices: &[usize],
     _n_bars: usize,
     stats: &StateStats,
     baseline_bull_rate: f64,
+    q_count: usize,
 ) -> f64 {
     let real_sign = stats.bias.signum();
 
@@ -383,7 +385,7 @@ fn noise_injection_test(
 
                 // Re-quantize using pre-computed boundaries — O(1)
                 let noisy_q =
-                    quantize::quantize_with_boundaries(noisy_val, &boundaries[feat][bar_idx]);
+                    quantize::quantize_with_boundaries(noisy_val, &boundaries[feat][bar_idx], q_count);
 
                 if noisy_q != expected_q {
                     matches = false;
@@ -555,7 +557,7 @@ fn apply_bh_fdr_with_alpha(results: &mut HashMap<StateKey, RobustnessResult>, to
 pub fn run_robustness_with_params(
     close: &[f64],
     quintiles: &[Vec<u8>],
-    boundaries: &[Vec<[f64; 4]>],
+    boundaries: &[Vec<[f64; MAX_BOUNDARIES]>],
     features: &[Vec<f64>],
     outcomes: &[u8],
     baseline_bull_rate: f64,
@@ -565,6 +567,7 @@ pub fn run_robustness_with_params(
     temporal_min_segments: usize,
     temporal_max_reversals: usize,
     min_noise_stability: f64,
+    q_count: usize,
 ) -> RobustnessOutput {
     let sig_keys: Vec<StateKey> = significant_states.keys().cloned().collect();
     let n_sig = sig_keys.len();
@@ -612,7 +615,7 @@ pub fn run_robustness_with_params(
             let pairs = state::decode_state(key);
 
             let perm_p = permutation_test(key, &pairs, &bar_quintiles, outcomes, &valid_indices, n_valid, stats, baseline_bull_rate);
-            let noise_stab = noise_injection_test(key, &pairs, features, &feature_stds, quintiles, boundaries, outcomes, &valid_indices, n_bars, stats, baseline_bull_rate);
+            let noise_stab = noise_injection_test(key, &pairs, features, &feature_stds, quintiles, boundaries, outcomes, &valid_indices, n_bars, stats, baseline_bull_rate, q_count);
             let (temporal_ok_raw, seg_edges) = temporal_subsample_test(key, &pairs, &bar_quintiles, outcomes, &valid_indices, n_valid, baseline_bull_rate);
 
             // Re-evaluate temporal with custom thresholds

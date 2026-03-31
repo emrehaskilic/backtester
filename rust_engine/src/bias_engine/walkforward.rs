@@ -97,10 +97,10 @@ pub fn run_walk_forward(
     assert!(n >= min_required, "Need at least {} bars for WF, got {}", min_required, n);
 
     // Pre-compute features and quantiles for the whole dataset (shared)
-    let feats = features::compute_features(high, low, close, buy_vol, sell_vol, oi);
+    let feats = features::compute_features(timestamps, high, low, close, buy_vol, sell_vol, oi);
     let quant_results = quantize::quantize_all_full(&feats);
     let quintiles: Vec<Vec<u8>> = quant_results.iter().map(|qr| qr.quintiles.clone()).collect();
-    let boundaries: Vec<Vec<[f64; 4]>> = quant_results.iter().map(|qr| qr.boundaries.clone()).collect();
+    let boundaries: Vec<Vec<[f64; quantize::MAX_BOUNDARIES]>> = quant_results.iter().map(|qr| qr.boundaries.clone()).collect();
 
     // Pre-compute HTF series (for sweep)
     let htf_series = htf::build_all_htf(timestamps, open, high, low, close, buy_vol, sell_vol);
@@ -142,7 +142,7 @@ pub fn run_walk_forward(
             .map(|i| feats.get(i)[..train_end].to_vec())
             .collect();
 
-        let train_boundaries: Vec<Vec<[f64; 4]>> = boundaries
+        let train_boundaries: Vec<Vec<[f64; quantize::MAX_BOUNDARIES]>> = boundaries
             .iter()
             .map(|b| b[..train_end].to_vec())
             .collect();
@@ -449,6 +449,10 @@ pub fn run_scoring_walkforward(
 ) -> ScoringWfResult {
     let n = close.len();
 
+    // Generate synthetic hourly timestamps (1H bars starting from epoch)
+    // Used for hour-of-day feature computation
+    let timestamps: Vec<u64> = (0..n).map(|i| (i as u64) * 3_600_000).collect();
+
     // Build test chunks
     let mut test_chunks: Vec<(usize, usize)> = Vec::new();
     let mut idx = TRAIN_1H;
@@ -460,12 +464,13 @@ pub fn run_scoring_walkforward(
     // Compute bias engine pipeline (train on first TRAIN_1H bars)
     let train_n = TRAIN_1H.min(n);
     let feats = features::compute_features_with_params(
+        &timestamps[..train_n],
         &high[..train_n], &low[..train_n], &close[..train_n],
         &buy_vol[..train_n], &sell_vol[..train_n], &oi[..train_n], params_a,
     );
     let quant = quantize::quantize_all_with_params(&feats, params_a.quant_window, params_a.quantile_count);
     let quintiles_train: Vec<Vec<u8>> = quant.iter().map(|qr| qr.quintiles.clone()).collect();
-    let boundaries_train: Vec<Vec<[f64; 4]>> = quant.iter().map(|qr| qr.boundaries.clone()).collect();
+    let boundaries_train: Vec<Vec<[f64; quantize::MAX_BOUNDARIES]>> = quant.iter().map(|qr| qr.boundaries.clone()).collect();
 
     let prob = probability::compute_probabilities_with_params(
         &close[..train_n], &quintiles_train, train_n,
@@ -482,6 +487,7 @@ pub fn run_scoring_walkforward(
         &prob.outcomes, prob.baseline_bull_rate, &significant, train_n,
         params_a.fdr_alpha, params_a.temporal_min_segments,
         params_a.temporal_max_reversals, params_a.min_noise_stability,
+        params_a.quantile_count,
     );
 
     let mut validated: HashMap<StateKey, fallback::ValidatedState> = HashMap::new();
@@ -494,7 +500,7 @@ pub fn run_scoring_walkforward(
     }
 
     // Full-range features + quintiles + bias values
-    let feats_full = features::compute_features_with_params(high, low, close, buy_vol, sell_vol, oi, params_a);
+    let feats_full = features::compute_features_with_params(&timestamps, high, low, close, buy_vol, sell_vol, oi, params_a);
     let quant_full = quantize::quantize_all_with_params(&feats_full, params_a.quant_window, params_a.quantile_count);
     let quintiles_full: Vec<Vec<u8>> = quant_full.iter().map(|qr| qr.quintiles.clone()).collect();
     let outcomes_full = probability::compute_outcomes(close, params_a.k_horizon);

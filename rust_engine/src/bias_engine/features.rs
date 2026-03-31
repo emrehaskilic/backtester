@@ -1,6 +1,6 @@
 /// Bias Engine — Feature Computation
 ///
-/// 13 features computed from OHLCV + buy_vol/sell_vol + OI:
+/// 16 features computed from OHLCV + buy_vol/sell_vol + OI + timestamps:
 ///   0.  CVD Z-Score Micro       (short-term buy/sell pressure)
 ///   1.  CVD Z-Score Macro       (long-term buy/sell pressure)
 ///   2.  OI Change ATR-Norm      (position building/unwinding)
@@ -14,10 +14,13 @@
 ///   10. Volume-Price Divergence (price up + vol down = weakness)
 ///   11. OI-Volume Interaction   (new positions vs liquidations)
 ///   12. Return Autocorrelation  (momentum vs mean-reversion regime)
+///   13. Hour of Day             (cyclical: maps 0-23 to quintile bins)
+///   14. Multi-TF Momentum 4H   (4-bar rolling momentum, higher timeframe trend)
+///   15. Multi-TF Momentum Daily (24-bar rolling momentum, daily trend)
 
 const EPSILON: f64 = 1e-10;
 
-pub const N_FEATURES: usize = 13;
+pub const N_FEATURES: usize = 16;
 
 pub const FEATURE_NAMES: [&str; N_FEATURES] = [
     "cvd_micro",
@@ -33,6 +36,9 @@ pub const FEATURE_NAMES: [&str; N_FEATURES] = [
     "vol_price_divergence",
     "oi_vol_interaction",
     "return_autocorr",
+    "hour_of_day",
+    "mtf_momentum_4h",
+    "mtf_momentum_daily",
 ];
 
 pub struct FeatureArrays {
@@ -53,8 +59,9 @@ impl FeatureArrays {
 
 // ── Public API ──
 
-/// Compute all 13 features from raw data
+/// Compute all 16 features from raw data (timestamps needed for hour-of-day)
 pub fn compute_features(
+    timestamps: &[u64],
     high: &[f64],
     low: &[f64],
     close: &[f64],
@@ -62,12 +69,13 @@ pub fn compute_features(
     sell_vol: &[f64],
     oi: &[f64],
 ) -> FeatureArrays {
-    compute_features_inner(high, low, close, buy_vol, sell_vol, oi,
-        12, 288, 12, 288, 12, 288, 288, 48, 24, 24, 48, 48, 24)
+    compute_features_inner(timestamps, high, low, close, buy_vol, sell_vol, oi,
+        12, 288, 12, 288, 12, 288, 288, 48, 24, 24, 48, 48, 24, 4, 24)
 }
 
-/// Compute all 13 features with custom window parameters
+/// Compute all 16 features with custom window parameters
 pub fn compute_features_with_params(
+    timestamps: &[u64],
     high: &[f64],
     low: &[f64],
     close: &[f64],
@@ -76,18 +84,20 @@ pub fn compute_features_with_params(
     oi: &[f64],
     params: &super::params::GroupAParams,
 ) -> FeatureArrays {
-    compute_features_inner(high, low, close, buy_vol, sell_vol, oi,
+    compute_features_inner(timestamps, high, low, close, buy_vol, sell_vol, oi,
         params.cvd_micro_window, params.cvd_macro_window,
         params.vol_micro_window, params.vol_macro_window,
         params.imbalance_ema_span, params.atr_pct_window,
         params.oi_change_window, params.vwap_window,
         params.momentum_window, params.wick_window,
         params.divergence_window, params.oi_vol_window,
-        params.autocorr_window)
+        params.autocorr_window,
+        params.mtf_4h_window, params.mtf_daily_window)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn compute_features_inner(
+    timestamps: &[u64],
     high: &[f64], low: &[f64], close: &[f64],
     buy_vol: &[f64], sell_vol: &[f64], oi: &[f64],
     cvd_micro_w: usize, cvd_macro_w: usize,
@@ -97,6 +107,7 @@ fn compute_features_inner(
     momentum_w: usize, wick_w: usize,
     divergence_w: usize, oi_vol_w: usize,
     autocorr_w: usize,
+    mtf_4h_w: usize, mtf_daily_w: usize,
 ) -> FeatureArrays {
     let n = close.len();
 
@@ -159,6 +170,15 @@ fn compute_features_inner(
     // 12. Return Autocorrelation
     let ret_autocorr = compute_return_autocorr(&returns, autocorr_w);
 
+    // 13. Hour of Day (mapped to continuous value for quantization)
+    let hour_of_day = compute_hour_of_day(timestamps, n);
+
+    // 14. Multi-TF Momentum 4H (4-bar rolling return z-score)
+    let mtf_4h = compute_mtf_momentum(&returns, mtf_4h_w);
+
+    // 15. Multi-TF Momentum Daily (24-bar rolling return z-score)
+    let mtf_daily = compute_mtf_momentum(&returns, mtf_daily_w);
+
     FeatureArrays {
         data: [
             cvd_micro,
@@ -174,6 +194,9 @@ fn compute_features_inner(
             vol_price_div,
             oi_vol_interact,
             ret_autocorr,
+            hour_of_day,
+            mtf_4h,
+            mtf_daily,
         ],
     }
 }
@@ -379,6 +402,59 @@ fn compute_return_autocorr(returns: &[f64], window: usize) -> Vec<f64> {
     }
 
     result
+}
+
+// ══════════════════════════════════════════════════════════════
+// FEATURES 13-15: Hour of Day + Multi-TF Momentum
+// ══════════════════════════════════════════════════════════════
+
+/// Feature 13: Hour of Day
+/// Maps timestamp to hour (0-23), output as continuous value.
+/// The quantization step will bin this into quintiles automatically.
+/// We use a linear mapping so quantization creates time-of-day bins.
+fn compute_hour_of_day(timestamps: &[u64], n: usize) -> Vec<f64> {
+    let mut result = vec![0.0f64; n];
+    for i in 0..n.min(timestamps.len()) {
+        // Extract hour from Unix milliseconds
+        let secs = (timestamps[i] / 1000) as i64;
+        let hour = ((secs % 86400) / 3600) as f64;
+        // Map to [0, 1] range so quantization creates uniform bins
+        result[i] = hour / 24.0;
+    }
+    result
+}
+
+/// Feature 14-15: Multi-Timeframe Momentum
+/// Rolling sum of returns over a larger window, then z-scored.
+/// mtf_4h_w=4 captures 4-bar (4H on 1H data) trend.
+/// mtf_daily_w=24 captures daily trend.
+fn compute_mtf_momentum(returns: &[f64], window: usize) -> Vec<f64> {
+    let n = returns.len();
+    if n < window || window == 0 {
+        return vec![f64::NAN; n];
+    }
+
+    let mut rolling_ret = vec![0.0f64; n];
+
+    // Rolling sum of returns
+    let mut sum = 0.0f64;
+    for j in 0..window {
+        sum += returns[j];
+    }
+    rolling_ret[window - 1] = sum;
+
+    for i in window..n {
+        sum += returns[i] - returns[i - window];
+        rolling_ret[i] = sum;
+    }
+
+    // Set pre-window values to NaN
+    for j in 0..(window - 1) {
+        rolling_ret[j] = f64::NAN;
+    }
+
+    // Z-score the rolling returns
+    rolling_zscore_skipnan(&rolling_ret, window)
 }
 
 // ══════════════════════════════════════════════════════════════
