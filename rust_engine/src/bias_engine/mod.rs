@@ -166,7 +166,7 @@ pub fn analyze(
     let n = close.len();
 
     // ── Step 1a: Compute 7 features ──
-    let feats = features::compute_features(high, low, close, buy_vol, sell_vol, oi);
+    let feats = features::compute_features(timestamps, high, low, close, buy_vol, sell_vol, oi);
 
     // ── Step 1b: HTF aggregation ──
     let htf_series = htf::build_all_htf(timestamps, open, high, low, close, buy_vol, sell_vol);
@@ -231,7 +231,7 @@ pub fn analyze_full(
     let n = close.len();
 
     // ── Step 1–2 ──
-    let feats = features::compute_features(high, low, close, buy_vol, sell_vol, oi);
+    let feats = features::compute_features(timestamps, high, low, close, buy_vol, sell_vol, oi);
     let htf_series = htf::build_all_htf(timestamps, open, high, low, close, buy_vol, sell_vol);
     let htf_counts: Vec<(String, usize)> = htf_series
         .iter()
@@ -242,7 +242,7 @@ pub fn analyze_full(
     // Use quantize_all_full to get both quintiles AND boundaries (for noise injection)
     let quant_results = quantize::quantize_all_full(&feats);
     let quintiles: Vec<Vec<u8>> = quant_results.iter().map(|qr| qr.quintiles.clone()).collect();
-    let boundaries: Vec<Vec<[f64; 4]>> = quant_results.iter().map(|qr| qr.boundaries.clone()).collect();
+    let boundaries: Vec<Vec<[f64; quantize::MAX_BOUNDARIES]>> = quant_results.iter().map(|qr| qr.boundaries.clone()).collect();
 
     let n_quantized = (0..n)
         .filter(|&i| (0..features::N_FEATURES).all(|f| quintiles[f][i] > 0))

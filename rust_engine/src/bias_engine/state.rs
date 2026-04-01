@@ -1,11 +1,11 @@
 /// Bias Engine — State Definition, Enumeration & Matching (Section 5 of spec)
 ///
 /// A **state** is a combination of (feature_index, quintile) pairs.
-/// Three depths:
-///   Depth 1 — single feature     :  7 × 5 = 35
-///   Depth 2 — feature pair       : 21 × 25 = 525
-///   Depth 3 — feature triple     : 35 × 125 = 4 375
-///   Total                                     = 4 935
+/// 16 features × 7 quintile bins. Three depths:
+///   Depth 1 — single feature     : C(16,1) × 7^1 = 112
+///   Depth 2 — feature pair       : C(16,2) × 7^2 = 5 880
+///   Depth 3 — feature triple     : C(16,3) × 7^3 = 192 080
+///   Total                                          = 198 072
 ///
 /// Compact encoding in u32:
 ///   bits 24-25 : depth (1, 2, or 3)
@@ -20,7 +20,7 @@ use super::features::N_FEATURES;
 /// Compact state identifier.
 pub type StateKey = u32;
 
-const N_QUINTILES: usize = 5;
+const N_QUINTILES: usize = 7;
 
 // ── Encoding / Decoding ──
 
@@ -59,6 +59,8 @@ pub fn state_depth(key: StateKey) -> u32 {
 pub fn state_to_string(key: StateKey) -> String {
     let short = [
         "cvd_mi", "cvd_ma", "oi_chg", "vol_mi", "vol_ma", "imb_sm", "atr_pc",
+        "vwap", "mom", "wick", "vp_div", "oi_vol", "autocr",
+        "hour", "mtf4h", "mtf_d",
     ];
     let pairs = decode_state(key);
     pairs
@@ -70,8 +72,12 @@ pub fn state_to_string(key: StateKey) -> String {
 
 // ── Enumeration ──
 
-/// Total number of states across all depths.
-pub const TOTAL_STATES: usize = 35 + 525 + 4375; // 4935
+/// Total number of states across all depths (16 features × 7 quintiles).
+/// Depth 1: C(16,1) × 7   = 112
+/// Depth 2: C(16,2) × 49  = 5_880
+/// Depth 3: C(16,3) × 343 = 192_080
+/// Total                   = 198_072
+pub const TOTAL_STATES: usize = 112 + 5_880 + 192_080; // 198_072
 
 /// Generate every possible state key.
 pub fn enumerate_all_states() -> Vec<StateKey> {

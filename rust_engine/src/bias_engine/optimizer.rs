@@ -234,12 +234,13 @@ fn run_bias_pipeline_and_cache(
 
     // Steps 1-4 on train set
     let feats = features::compute_features_with_params(
+        &timestamps[..train_n],
         &high[..train_n], &low[..train_n], &close[..train_n],
         &buy_vol[..train_n], &sell_vol[..train_n], &oi[..train_n], params,
     );
     let quant = quantize::quantize_all_with_params(&feats, params.quant_window, params.quantile_count);
     let quintiles: Vec<Vec<u8>> = quant.iter().map(|qr| qr.quintiles.clone()).collect();
-    let boundaries: Vec<Vec<[f64; 4]>> = quant.iter().map(|qr| qr.boundaries.clone()).collect();
+    let boundaries: Vec<Vec<[f64; quantize::MAX_BOUNDARIES]>> = quant.iter().map(|qr| qr.boundaries.clone()).collect();
 
     let prob = probability::compute_probabilities_with_params(
         &close[..train_n], &quintiles, train_n,
@@ -256,6 +257,7 @@ fn run_bias_pipeline_and_cache(
         &prob.outcomes, prob.baseline_bull_rate, &significant, train_n,
         params.fdr_alpha, params.temporal_min_segments,
         params.temporal_max_reversals, params.min_noise_stability,
+        params.quantile_count,
     );
 
     let mut validated: HashMap<StateKey, ValidatedState> = HashMap::new();
@@ -269,7 +271,7 @@ fn run_bias_pipeline_and_cache(
     let n_validated = validated.len();
 
     // Compute full-range features + quintiles for scoring
-    let feats_full = features::compute_features_with_params(high, low, close, buy_vol, sell_vol, oi, params);
+    let feats_full = features::compute_features_with_params(timestamps, high, low, close, buy_vol, sell_vol, oi, params);
     let quant_full = quantize::quantize_all_with_params(&feats_full, params.quant_window, params.quantile_count);
     let quintiles_full: Vec<Vec<u8>> = quant_full.iter().map(|qr| qr.quintiles.clone()).collect();
     let outcomes_full = probability::compute_outcomes(close, params.k_horizon);
